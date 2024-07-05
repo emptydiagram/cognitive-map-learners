@@ -52,7 +52,8 @@ class CML:
 
 
     def action_similarities(self):
-        return self.V.T @ self.V
+        V_norm = self.V / jnp.linalg.norm(self.V, axis=1, keepdims=True)
+        return V_norm.T @ V_norm
 
 
 
@@ -183,12 +184,53 @@ if __name__ == '__main__':
     plt.show()
     plt.close(fig)
 
-    cos_sims = cml.action_similarities()
+    def cml_matrices_are_pseudo_orthogonal():
+        cos_sims = cml.action_similarities()
+        fig, ax = plt.subplots()
+        im = ax.imshow(cos_sims, cmap='plasma')
+        ax.set_title("Cosine similarities, V matrix")
+        fig.colorbar(im)
+        fig.tight_layout()
+        plt.show()
+        plt.close(fig)
 
+        # distance between pairs of state nodes versus the shortest path length between said states in the graph
+        G = nx.from_numpy_array(adj_matrix, create_using=nx.DiGraph)
+        print(nx.is_strongly_connected(G))
+        print(nx.is_weakly_connected(G))
+        state_distances = {}
+        for i in range(n_obs):
+            for j in range(i + 1, n_obs):
+                shpath = nx.shortest_path(G, source=i, target=j)
+                shpath_len = len(shpath)
+                state_node_dist = jnp.linalg.norm(cml.Q[:, i] - cml.Q[:, j])
+                if shpath_len not in state_distances:
+                    state_distances[shpath_len] = []
+                state_distances[shpath_len].append(state_node_dist)
+
+        for spl in state_distances:
+            state_distances[spl] = sum(state_distances[spl]) / len(state_distances[spl])
+
+        fig, ax = plt.subplots()
+        ax.bar(state_distances.keys(), state_distances.values())
+        plt.show()
+        plt.close(fig)
+
+    # cml_matrices_are_pseudo_orthogonal()
+
+    # the "Assembling Modular, Hierarchical Cognitive Map Learners with Hyperdimensional Computing"
+    # paper says "vector element values [are] normally distributed over [-0.1, 0.1]"
+    # check this by scatter-plotting vector elements
+
+    Q_flat = cml.Q.reshape(-1)
     fig, ax = plt.subplots()
-    im = ax.imshow(cos_sims, cmap='plasma')
-    ax.set_title("Cosine similarities, V matrix")
-    fig.colorbar(im)
-    fig.tight_layout()
+    ax.hist(Q_flat, bins=100, density=True)
+
+    def plot_gaussian(ax, gauss_mean, gauss_std, plot_color):
+        plot_xs = jnp.linspace(gauss_mean - 3 * gauss_std, gauss_mean + 3 * gauss_std, 200)
+        plot_ys = 1.0 / (jnp.sqrt(2 * jnp.pi) * gauss_std) * jnp.exp(-0.5 * ((plot_xs - gauss_mean) / gauss_std)**2)
+        ax.plot(plot_xs, plot_ys, color=plot_color)
+
+    plot_gaussian(ax, 0.0, 0.35, 'r')
     plt.show()
     plt.close(fig)
