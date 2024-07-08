@@ -136,7 +136,37 @@ def do_graph_random_walks(adj_matrix, edge_indices, num_walks, walk_length, key)
             trajectory.append((curr_node, edge_indices[(curr_node, next_node)], next_node))
             curr_node = next_node
         trajectories.append(trajectory)
-    return jnp.array(trajectories)
+    return jnp.array(trajectories), key
+
+
+def calc_noise_floor(key, emb_dim, num_trials):
+    key, *subkeys1 = jax.random.split(key, num=num_trials + 1)
+    key, *subkeys2 = jax.random.split(key, num=num_trials + 1)
+    subkeys = zip(subkeys1, subkeys2)
+    max_sim = 0.0
+    max_sim_bip = 0.0
+    for key1, key2 in subkeys:
+        x = jax.random.normal(key1, (emb_dim,))
+        y = jax.random.normal(key2, (emb_dim,))
+        sim = jnp.dot(x, y) / (jnp.linalg.norm(x) * jnp.linalg.norm(y))
+        sim = sim.item()
+
+        if sim > max_sim:
+            max_sim = sim
+
+        x_bip = jnp.sign(x)
+        y_bip = jnp.sign(y)
+        sim_bip = jnp.dot(x_bip, y_bip) / (jnp.linalg.norm(x_bip) * jnp.linalg.norm(y_bip))
+        sim_bip = sim_bip.item()
+
+        if sim_bip > max_sim_bip:
+            max_sim_bip = sim_bip
+
+    print(f"{max_sim=}, {max_sim_bip=}")
+
+    return max_sim, key
+
+
 
 
 
@@ -145,15 +175,18 @@ if __name__ == '__main__':
     key = jax.random.PRNGKey(seed)
 
     adj_matrix, edge_indices = gen_random_graph(key)
+    n_nodes = adj_matrix.shape[0]
+
     # draw_graph(adj_list)
+
 
     # take 200 random walks of length 32, each initialized from a random starting point
     # save them to do replay
     num_walks = 200
     walk_length = 32
-    trajectories = do_graph_random_walks(adj_matrix, edge_indices, num_walks, walk_length, key)
+    trajectories, key = do_graph_random_walks(adj_matrix, edge_indices, num_walks, walk_length, key)
 
-    n_obs = adj_matrix.shape[0]
+    n_obs = n_nodes
     n_act = len(edge_indices)
     emb_dim = 1000
     Q_init_stddev = 1.0
@@ -162,6 +195,10 @@ if __name__ == '__main__':
     eta_q = 0.1
     eta_v = 0.01
     eta_w = 0.01
+
+
+    theta, key = calc_noise_floor(key, emb_dim, num_trials=10000)
+
     cml_params = {
         'n_obs': n_obs,
         'n_act': n_act,
@@ -216,21 +253,23 @@ if __name__ == '__main__':
         plt.show()
         plt.close(fig)
 
-    # cml_matrices_are_pseudo_orthogonal()
 
     # the "Assembling Modular, Hierarchical Cognitive Map Learners with Hyperdimensional Computing"
     # paper says "vector element values [are] normally distributed over [-0.1, 0.1]"
     # check this by scatter-plotting vector elements
+    def state_vectors_normally_distrib():
+        Q_flat = cml.Q.reshape(-1)
+        fig, ax = plt.subplots()
+        ax.hist(Q_flat, bins=100, density=True)
 
-    Q_flat = cml.Q.reshape(-1)
-    fig, ax = plt.subplots()
-    ax.hist(Q_flat, bins=100, density=True)
+        def plot_gaussian(ax, gauss_mean, gauss_std, plot_color):
+            plot_xs = jnp.linspace(gauss_mean - 3 * gauss_std, gauss_mean + 3 * gauss_std, 200)
+            plot_ys = 1.0 / (jnp.sqrt(2 * jnp.pi) * gauss_std) * jnp.exp(-0.5 * ((plot_xs - gauss_mean) / gauss_std)**2)
+            ax.plot(plot_xs, plot_ys, color=plot_color)
 
-    def plot_gaussian(ax, gauss_mean, gauss_std, plot_color):
-        plot_xs = jnp.linspace(gauss_mean - 3 * gauss_std, gauss_mean + 3 * gauss_std, 200)
-        plot_ys = 1.0 / (jnp.sqrt(2 * jnp.pi) * gauss_std) * jnp.exp(-0.5 * ((plot_xs - gauss_mean) / gauss_std)**2)
-        ax.plot(plot_xs, plot_ys, color=plot_color)
+        plot_gaussian(ax, 0.0, 0.35, 'r')
+        plt.show()
+        plt.close(fig)
 
-    plot_gaussian(ax, 0.0, 0.35, 'r')
-    plt.show()
-    plt.close(fig)
+    # cml_matrices_are_pseudo_orthogonal()
+    # state_vectors_normally_distrib()
