@@ -5,6 +5,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import networkx as nx
 
+from util import build_toh_adj_matrix, gen_random_graph
+
 class CML:
     def __init__(self, key, params):
         param_names = ['n_obs', 'n_act', 'emb_dim', 'Q_init_stddev', 'V_init_stddev', 'W_init_stddev', 'eta_q', 'eta_v', 'eta_w']
@@ -19,7 +21,6 @@ class CML:
         self.V = jax.random.normal(key2, (emb_dim, n_act)) * V_init_stddev
         self.W = jax.random.normal(key3, (n_act, emb_dim)) * W_init_stddev
 
-        self.I_A = jnp.eye(n_act)
 
     def learn_from_trajectories(self, trajectories, num_epochs):
         # O : dimension of observation space
@@ -34,8 +35,6 @@ class CML:
                 nodes = trajectories[traj_idx, :, 0]
                 edges = trajectories[traj_idx, :, 1]
                 next_nodes = trajectories[traj_idx, :, 2]
-
-                a_AxL = self.I_A[:, edges]
 
                 s_curr_DxL = self.Q[:, nodes]
                 s_next_DxL = self.Q[:, next_nodes]
@@ -59,59 +58,6 @@ class CML:
 
 
     
-def gen_random_graph(key, n_nodes=32, min_degree=2, max_degree=5):
-    action_indices = {}
-    adj_list = [None for i in range(n_nodes)]
-
-    key, key1, key2 = jax.random.split(key, 3)
-    degrees = jax.random.randint(key1, (n_nodes,),  min_degree, max_degree + 1)
-    degree_sum = degrees.sum()
-    if degrees.sum() % 2 != 0:
-        adjust_idx = jax.random.randint(key2, (), 0, n_nodes)
-        if degrees[adjust_idx] == min_degree:
-            degrees = degrees.at[adjust_idx].set(degrees[adjust_idx] + 1)
-        elif degrees[adjust_idx] == max_degree:
-            degrees = degrees.at[adjust_idx].set(degrees[adjust_idx] - 1)
-        else:
-            adj = jax.random.choice(key2, jnp.array([-1, 1]))
-            degrees = degrees.at[adjust_idx].set(degrees[adjust_idx] + adj)
-
-    rem_degrees = jnp.copy(degrees)
-
-    adj_matrix = jnp.zeros((n_nodes, n_nodes), dtype=jnp.uint8)
-    edges = []
-    edge_indices = {}
-    edge_idx = 0
-    while rem_degrees.sum() != 0:
-        i = jnp.argmax(rem_degrees).item()
-        rem_degrees_gz = rem_degrees > 0
-        rem_degrees_not_argmax = jnp.arange(rem_degrees.size) != i
-        pending_edges = jnp.where(rem_degrees_gz & rem_degrees_not_argmax)[0]
-        key, key1 = jax.random.split(key, 2)
-        j = jax.random.choice(key1, pending_edges, ()).item()
-
-        # find a better way to do this?
-        if (i, j) in edges:
-            continue
-
-        edges.append((i,j))
-        edge_indices[(i,j)] = edge_idx
-        edge_idx += 1
-        edges.append((j,i))
-        edge_indices[(j,i)] = edge_idx
-        edge_idx += 1
-        rem_degrees = rem_degrees.at[i].add(-1)
-        rem_degrees = rem_degrees.at[j].add(-1)
-
-    for i, j in edges:
-        adj_matrix = adj_matrix.at[i, j].set(1)
-
-    # print((jnp.sum(adj_matrix, axis=0) == degrees).all())
-    # print((adj_matrix == adj_matrix.T).all())
-    # print((jnp.diagonal(adj_matrix) == 0).all())
-
-    return adj_matrix, edge_indices
-
 def draw_graph(adj_list):
     G = nx.Graph()
     for i, neighbors in enumerate(adj_list):
@@ -139,32 +85,6 @@ def do_graph_random_walks(adj_matrix, edge_indices, num_walks, walk_length, key)
     return jnp.array(trajectories), key
 
 
-def calc_noise_floor(key, emb_dim, num_trials):
-    key, *subkeys1 = jax.random.split(key, num=num_trials + 1)
-    key, *subkeys2 = jax.random.split(key, num=num_trials + 1)
-    subkeys = zip(subkeys1, subkeys2)
-    max_sim = 0.0
-    max_sim_bip = 0.0
-    for key1, key2 in subkeys:
-        x = jax.random.normal(key1, (emb_dim,))
-        y = jax.random.normal(key2, (emb_dim,))
-        sim = jnp.dot(x, y) / (jnp.linalg.norm(x) * jnp.linalg.norm(y))
-        sim = sim.item()
-
-        if sim > max_sim:
-            max_sim = sim
-
-        x_bip = jnp.sign(x)
-        y_bip = jnp.sign(y)
-        sim_bip = jnp.dot(x_bip, y_bip) / (jnp.linalg.norm(x_bip) * jnp.linalg.norm(y_bip))
-        sim_bip = sim_bip.item()
-
-        if sim_bip > max_sim_bip:
-            max_sim_bip = sim_bip
-
-    print(f"{max_sim=}, {max_sim_bip=}")
-
-    return max_sim, key
 
 
 
@@ -174,19 +94,22 @@ if __name__ == '__main__':
     seed = 1234
     key = jax.random.PRNGKey(seed)
 
-    adj_matrix, edge_indices = gen_random_graph(key)
-    n_nodes = adj_matrix.shape[0]
+    graph_type = 'ToH'
 
-    # draw_graph(adj_list)
+    if graph_type == 'rand':
+        adj_matrix, edge_indices = gen_random_graph(key)
 
+        # take 200 random walks of length 32, each initialized from a random starting point
+        # save them to do replay
+        num_walks = 200
+        walk_length = 32
+        trajectories, key = do_graph_random_walks(adj_matrix, edge_indices, num_walks, walk_length, key)
+    elif graph_type == 'ToH':
+        adj_matrix, node_indices, edge_indices = build_toh_adj_matrix()
+    else:
+        raise Exception(f"unrecognized graph_type value '{graph_type}'")
 
-    # take 200 random walks of length 32, each initialized from a random starting point
-    # save them to do replay
-    num_walks = 200
-    walk_length = 32
-    trajectories, key = do_graph_random_walks(adj_matrix, edge_indices, num_walks, walk_length, key)
-
-    n_obs = n_nodes
+    n_obs = adj_matrix.shape[0]
     n_act = len(edge_indices)
     emb_dim = 1000
     Q_init_stddev = 1.0
@@ -196,8 +119,6 @@ if __name__ == '__main__':
     eta_v = 0.01
     eta_w = 0.01
 
-
-    theta, key = calc_noise_floor(key, emb_dim, num_trials=10000)
 
     cml_params = {
         'n_obs': n_obs,
